@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (極速手動覆盤版)</title>
+    <title>台指選擇權策略分析器 (複式單部位組合版)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
         h2, h3, h4 { margin-top: 0; color: #333; }
-        .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 15px; }
+        .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { font-size: 14px; color: #666; font-weight: bold; }
         select, input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { background-color: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
@@ -26,8 +26,8 @@
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (極速手動覆盤版)</h2>
-        <p>純本地端數學引擎，免去網路連線延遲。請直接輸入收盤點數或你想模擬的目標行情進行計算。</p>
+        <h2>📊 台指選擇權策略分析器 (複式單部位組合版)</h2>
+        <p>此版本支援無限部位疊加，您可以自由模擬多腳複式單（如價差、勒式、鐵蝴蝶）並調整各自的口數。</p>
         <div class="input-group">
             <div>
                 <label>台指期模擬基準價 (S)：</label>
@@ -59,7 +59,7 @@
     </div>
 
     <div class="card">
-        <h3>➕ 新增策略部位</h3>
+        <h3>➕ 新增複式單部位 (可連續新增)</h3>
         <div class="input-group">
             <div>
                 <label>買/賣</label>
@@ -83,12 +83,16 @@
                 <label>權利金(點數)</label>
                 <input type="number" id="premium" value="100">
             </div>
+            <div>
+                <label>口數</label>
+                <input type="number" id="quantity" value="1" min="1" step="1">
+            </div>
             <div style="display: flex; align-items: flex-end;">
-                <button class="btn-add" onclick="addPosition()">加入組合</button>
+                <button class="btn-add" onclick="addPosition()">加入部位</button>
             </div>
         </div>
 
-        <h4>當前策略部位：</h4>
+        <h4>當前複式組合部位清單：</h4>
         <div id="positionList"></div>
 
         <div class="summary-box">
@@ -107,7 +111,7 @@
     </div>
 
     <div class="card">
-        <h3>📈 到期損益與機率山丘圖 (台指每點 50 元)</h3>
+        <h3>📈 複式策略總損益與機率山丘圖 (台指每點 50 元)</h3>
         <canvas id="payoffChart" width="800" height="350"></canvas>
     </div>
 
@@ -116,11 +120,10 @@
         let chartInstance = null;
         const MULTIPLIER = 50;
 
-        // 預設一組常見的寬幅賣出勒式策略
-        positions.push({ side: 'Short', type: 'Call', strike: 23400, premium: 45 });
-        positions.push({ side: 'Short', type: 'Put', strike: 22600, premium: 50 });
+        // 預設一組常見的複式單組合：買權多頭價差 (Buy 23000C x 2口, Sell 23200C x 2口)
+        positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 180, quantity: 2 });
+        positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 60, quantity: 2 });
 
-        // 基準價改變時，自動幫下方的履約價框校正到最接近的百位數（方便新增部位）
         function onPriceChange() {
             const S = parseFloat(document.getElementById('currentPrice').value);
             document.getElementById('strike').value = Math.round(S / 100) * 100;
@@ -163,18 +166,29 @@
             }
 
             const direction = pos.side === 'Long' ? 1 : -1;
-            return { delta: delta * direction, gamma: gamma * direction, vega: vega * direction, theta: theta * direction };
+            // 希臘字母需乘上該部位的「口數」
+            return { 
+                delta: delta * direction * pos.quantity, 
+                gamma: gamma * direction * pos.quantity, 
+                vega: vega * direction * pos.quantity, 
+                theta: theta * direction * pos.quantity 
+            };
         }
 
-        // --- UI 與基礎計算邏輯 ---
+        // --- UI 操作與基礎計算邏輯 ---
         function renderPositions() {
             const listDiv = document.getElementById('positionList');
             listDiv.innerHTML = '';
             positions.forEach((pos, index) => {
                 listDiv.innerHTML += `
                     <div class="position-item">
-                        <span><strong>${pos.side === 'Long' ? '買進' : '賣出'}</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點</span>
-                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
+                        <span>
+                            🟢 <strong>[${pos.side === 'Long' ? '買進' : '賣出'}]</strong> 
+                            ${pos.type} 履約價: ${pos.strike} | 
+                            權利金: <span style="color:#007bff; font-weight:bold;">${pos.premium}</span> 點 | 
+                            <strong>${pos.quantity}</strong> 口
+                        </span>
+                        <button class="delete-btn" onclick="deletePosition(${index})">刪除部位</button>
                     </div>
                 `;
             });
@@ -185,7 +199,9 @@
             const type = document.getElementById('type').value;
             const strike = parseFloat(document.getElementById('strike').value);
             const premium = parseFloat(document.getElementById('premium').value);
-            positions.push({ side, type, strike, premium });
+            const quantity = parseInt(document.getElementById('quantity').value) || 1;
+            
+            positions.push({ side, type, strike, premium, quantity });
             updateAll();
         }
 
@@ -201,13 +217,16 @@
             } else {
                 payoff = Math.max(pos.strike - st, 0) - pos.premium;
             }
-            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER;
+            // 損益乘上口數
+            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER * pos.quantity;
         }
 
         function calculateSingleMargin(pos, S, paramA, paramB) {
             if (pos.side === 'Long') return 0;
             let outOfMoney = pos.type === 'Call' ? Math.max(pos.strike - S, 0) : Math.max(S - pos.strike, 0);
-            return (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
+            // 單一口保證金公式乘上口數 (註：此處為單一部位保證金粗估加總，未包含期交所複雜的跨部位保證金最佳化減免)
+            const singleMargin = (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
+            return singleMargin * pos.quantity;
         }
 
         function updateAll() {
@@ -225,7 +244,7 @@
             let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
 
             positions.forEach(pos => {
-                const premiumVal = pos.premium * MULTIPLIER;
+                const premiumVal = pos.premium * MULTIPLIER * pos.quantity;
                 totalPremiumCost += (pos.side === 'Long' ? -premiumVal : premiumVal);
                 totalMarginRequirement += calculateSingleMargin(pos, S, paramA, paramB);
                 
@@ -294,7 +313,7 @@
                 data: {
                     labels: labels,
                     datasets: [
-                        { label: '到期總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
+                        { label: '複式策略總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
                         { label: '結算價機率分佈 (右軸)', data: probabilityPoints, borderColor: '#ff9800', backgroundColor: 'rgba(255, 152, 0, 0.08)', borderWidth: 2, fill: true, yAxisID: 'y1', pointRadius: 0 }
                     ]
                 },
@@ -310,7 +329,6 @@
             });
         }
 
-        // 網頁初始載入時直接繪製圖形
         window.onload = function() {
             updateAll();
         };
