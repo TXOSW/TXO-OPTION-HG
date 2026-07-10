@@ -3,29 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (網頁版)</title>
+    <title>台指選擇權策略分析器 (專業保證金版)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
-        h2 { margin-top: 0; color: #333; }
-        .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1-fraction)); gap: 10px; margin-bottom: 15px; }
+        h2, h3, h4 { margin-top: 0; color: #333; }
+        .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { font-size: 14px; color: #666; font-weight: bold; }
         select, input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { background-color: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         button:hover { background-color: #0056b3; }
         .position-item { background: #e9ecef; padding: 10px; border-radius: 4px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
         .delete-btn { background-color: #dc3545; padding: 5px 10px; font-size: 12px; }
+        .summary-box { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px; background: #e3f2fd; padding: 15px; border-radius: 6px; }
+        .summary-item { font-size: 16px; color: #0d47a1; font-weight: bold; }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器</h2>
-        <p>請輸入目前台指期貨點數，並新增選擇權部位來模擬到期損益圖。</p>
-        <div style="margin-bottom: 15px;">
-            <label>目前台指期基準價：</label>
-            <input type="number" id="currentPrice" value="23000" style="width: 150px;" onchange="updateChart()">
+        <h2>📊 台指選擇權策略分析器 (專業保證金版)</h2>
+        <p>請輸入目前台指期貨點數，並自訂期交所的保證金參數（A值、B值）。</p>
+        <div class="input-group">
+            <div>
+                <label>目前台指期基準價：</label>
+                <input type="number" id="currentPrice" value="23000" onchange="updateAll()">
+            </div>
+            <div>
+                <label>期交所 A 值 (元)：</label>
+                <input type="number" id="paramA" value="48000" onchange="updateAll()">
+            </div>
+            <div>
+                <label>期交所 B 值 (元)：</label>
+                <input type="number" id="paramB" value="25000" onchange="updateAll()">
+            </div>
         </div>
     </div>
 
@@ -61,26 +73,33 @@
 
         <h4>當前部位清單：</h4>
         <div id="positionList"></div>
+
+        <div class="summary-box">
+            <div class="summary-item" id="totalPremiumCost">總權利金收支：0 元</div>
+            <div class="summary-item" id="totalMargin">預估總保證金：0 元</div>
+            <div class="summary-item" id="maxProfit">最大可能獲利：計算中...</div>
+        </div>
     </div>
 
     <div class="card">
         <h3>📈 到期損益模擬圖 (台指每點 50 元)</h3>
-        <canvas id="payoffChart" width="800" height="400"></canvas>
+        <canvas id="payoffChart" width="800" height="350"></canvas>
     </div>
 
     <script>
-        // 儲存所有部位的陣列
         let positions = [];
         let chartInstance = null;
+        const MULTIPLIER = 50; // 台指契約乘數
 
-        // 初始化預設部位：買權多頭價差 (Buy 23000 C @150, Sell 23200 C @50)
-        positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150 });
-        positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50 });
+        // 預設載入一組賣出勒式策略 (Short 23500C @50, Short 22500P @60)
+        positions.push({ side: 'Short', type: 'Call', strike: 23500, premium: 50 });
+        positions.push({ side: 'Short', type: 'Put', strike: 22500, premium: 60 });
 
         function renderPositions() {
             const listDiv = document.getElementById('positionList');
             listDiv.innerHTML = '';
             positions.forEach((pos, index) => {
+                const marginText = pos.side === 'Short' ? ` (預估單一部位保證金)` : ' (買方免保證金)';
                 listDiv.innerHTML += `
                     <div class="position-item">
                         <span><strong>${pos.side === 'Long' ? '買進' : '賣出'}</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點</span>
@@ -97,55 +116,87 @@
             const premium = parseFloat(document.getElementById('premium').value);
 
             positions.push({ side, type, strike, premium });
-            renderPositions();
-            updateChart();
+            updateAll();
         }
 
         function deletePosition(index) {
             positions.splice(index, 1);
-            renderPositions();
-            updateChart();
+            updateAll();
         }
 
-        // 核心數學邏輯：計算單一部位在特定結算價(st)下的損益
+        // 計算單一部位在特定結算價(st)下的損益
         function calculateSinglePayoff(st, pos) {
             let payoff = 0;
-            const multiplier = 50; // 台指規格
-
             if (pos.type === 'Call') {
                 payoff = Math.max(st - pos.strike, 0) - pos.premium;
             } else {
                 payoff = Math.max(pos.strike - st, 0) - pos.premium;
             }
-
-            if (pos.side === 'Short') {
-                payoff = -payoff;
-            }
-
-            return payoff * multiplier;
+            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER;
         }
 
-        // 更新 Chart.js 圖表
-        function updateChart() {
+        // 精確計算台指選單一部位的賣方保證金 (A值、B值公式)
+        function calculateSingleMargin(pos, currentPrice, paramA, paramB) {
+            if (pos.side === 'Long') return 0; // 買方不需要保證金
+
+            let outOfMoney = 0; // 價外值
+            if (pos.type === 'Call') {
+                outOfMoney = Math.max(pos.strike - currentPrice, 0);
+            } else {
+                outOfMoney = Math.max(currentPrice - pos.strike, 0);
+            }
+
+            // 期交所官方公式：權利金市值 + Max(A值 - 價外值, B值)
+            const premiumMarketValue = pos.premium * MULTIPLIER;
+            const margin = premiumMarketValue + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
+            return margin;
+        }
+
+        // 更新數據、計算摘要與繪製圖表
+        function updateAll() {
+            renderPositions();
+
             const currentPrice = parseFloat(document.getElementById('currentPrice').value);
+            const paramA = parseFloat(document.getElementById('paramA').value);
+            const paramB = parseFloat(document.getElementById('paramB').value);
+
+            // 1. 計算摘要數據
+            let totalPremiumTextCost = 0;
+            let totalMarginRequirement = 0;
+
+            positions.forEach(pos => {
+                // 權利金收支 (買方付出(-) / 賣方收取(+))
+                const premiumVal = pos.premium * MULTIPLIER;
+                totalPremiumTextCost += (pos.side === 'Long' ? -premiumVal : premiumVal);
+                
+                // 保證金加總
+                totalMarginRequirement += calculateSingleMargin(pos, currentPrice, paramA, paramB);
+            });
+
+            document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumTextCost >= 0 ? '+' : ''}${totalPremiumTextCost} 元`;
+            document.getElementById('totalMargin').innerText = `預估總保證金：${totalMarginRequirement} 元`;
+
+            // 2. 模擬圖表數據與找出最大獲利
             const labels = [];
             const dataPoints = [];
+            let maxProfitFound = -Infinity;
 
-            // 模擬基準價上下 500 點，每 10 點計一個標籤
-            for (let st = currentPrice - 500; st <= currentPrice + 500; st += 10) {
+            // 模擬基準價上下 1000 點，每 10 點計一個標籤
+            for (let st = currentPrice - 1000; st <= currentPrice + 1000; st += 10) {
                 labels.push(st);
                 let totalPayoff = 0;
                 positions.forEach(pos => {
                     totalPayoff += calculateSinglePayoff(st, pos);
                 });
                 dataPoints.push(totalPayoff);
+                if (totalPayoff > maxProfitFound) maxProfitFound = totalPayoff;
             }
 
+            document.getElementById('maxProfit').innerText = `最大可能獲利：${maxProfitFound > 0 ? maxProfitFound : 0} 元`;
+
+            // 3. 繪製 Chart.js
             const ctx = document.getElementById('payoffChart').getContext('2d');
-            
-            if (chartInstance) {
-                chartInstance.destroy();
-            }
+            if (chartInstance) chartInstance.destroy();
 
             chartInstance = new Chart(ctx, {
                 type: 'line',
@@ -155,7 +206,7 @@
                         label: '策略總損益 (NTD)',
                         data: dataPoints,
                         borderColor: '#28a745',
-                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        backgroundColor: 'rgba(40, 167, 69, 0.05)',
                         borderWidth: 3,
                         fill: true,
                         pointRadius: 0
@@ -163,6 +214,7 @@
                 },
                 options: {
                     responsive: true,
+                    interaction: { mode: 'index', intersect: false },
                     scales: {
                         x: { title: { display: true, text: '到期結算價' } },
                         y: { title: { display: true, text: '損益 (元)' } }
@@ -171,9 +223,8 @@
             });
         }
 
-        // 首次載入
-        renderPositions();
-        updateChart();
+        // 首次初始化
+        updateAll();
     </script>
 </body>
 </html>
