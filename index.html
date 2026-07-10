@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (證交所官方數據版11)</title>
+    <title>台指選擇權策略分析器 (直連證交所完全體)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
@@ -22,22 +22,22 @@
         .summary-item { font-size: 16px; color: #1b5e20; font-weight: bold; }
         .greeks-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #fff3e0; padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 14px; color: #e65100; font-weight: bold; text-align: center; }
         .flex-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .status-badge { display: inline-block; font-size: 13px; color: #155724; font-weight: bold; margin-bottom: 10px; padding: 6px 12px; border-radius: 4px; }
+        .status-badge { display: inline-block; font-size: 13px; color: #0056b3; font-weight: bold; margin-bottom: 10px; padding: 6px 12px; border-radius: 4px; }
         @media (max-width: 768px) { .flex-container { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (證交所官方數據版)</h2>
-        <p>直連台灣證交所官方 OpenAPI 平台。若在非開盤時間或假日點開網頁，系統會自動往前回溯取得最近一個交易日的收盤價。</p>
+        <h2>📊 台指選擇權策略分析器 (直連證交所完全體)</h2>
+        <p>100% 網頁端運作，免設機器人。開啟時自動向台灣證交所要最新收盤價，也支援滑鼠滾輪快速微調點數。</p>
         
-        <div id="apiStatus" class="status-badge" style="background-color: #e3f2fd; color: #0056b3;">🔄 正在直連台灣證交所官方數據節點...</div>
+        <div id="apiStatus" class="status-badge" style="background-color: #e3f2fd;">🔄 正在直連證交所獲取最新大盤點位...</div>
 
         <div class="input-group">
             <div>
                 <label>台指期模擬基準價 (S)：</label>
-                <input type="number" id="currentPrice" value="23000" onchange="onPriceChange()">
+                <input type="number" id="currentPrice" value="23000" step="50" onchange="onPriceChange()" onwheel="this.blur()">
             </div>
             <div>
                 <label>歷史/隱含波動率 (IV %)：</label>
@@ -155,18 +155,19 @@
         let chartInstance = null;
         const MULTIPLIER = 50;
 
-        // 預設持倉
         positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150, quantity: 1 });
         positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50, quantity: 1 });
 
-        // --- 🤖 升級版：直連證交所並具備「自動倒追前一日收盤價」大腦 ---
+        // --- 🤖 終極免機器人版：前端直接問台灣證交所 OpenAPI ---
         async function fetchTWSESettlementPrice() {
             const badge = document.getElementById('apiStatus');
+            // 台灣證交所大盤成交資訊官方開放 API
             const twseApiUrl = 'https://openapi.twse.com.tw/v1/exchangeReport/FMTQIK';
 
             try {
-                const response = await fetch(twseApiUrl);
-                if (!response.ok) throw new Error();
+                // 加上時間戳防止瀏覽器快取舊資料
+                const response = await fetch(twseApiUrl + '?nocache=' + Date.now());
+                if (!response.ok) throw new Error("證交所連線失敗");
                 
                 const data = await response.json();
                 
@@ -174,7 +175,7 @@
                     let livePrice = 0;
                     let targetDayData = null;
 
-                    // 🌟 修正核心：從最新的一天往回搜尋，直到找到一筆「具有正確收盤指數」的有效交易日為止
+                    // 往回找最近一天有成功收盤點數的日子
                     for (let i = data.length - 1; i >= 0; i--) {
                         if (data[i] && data[i].ClosingIndex) {
                             const rawPrice = data[i].ClosingIndex.replace(/,/g, '');
@@ -182,7 +183,7 @@
                             if (parsed && parsed > 0) {
                                 livePrice = parsed;
                                 targetDayData = data[i];
-                                break; // 抓到了就立刻跳出迴圈
+                                break;
                             }
                         }
                     }
@@ -191,24 +192,23 @@
                         const roundedPrice = Math.round(livePrice);
                         const dataDate = targetDayData.Date || '最近交易日';
                         
-                        // 自動同步至網頁輸入框
                         document.getElementById('currentPrice').value = roundedPrice;
                         document.getElementById('strike').value = Math.round(roundedPrice / 100) * 100;
                         document.getElementById('tplStrike').value = Math.round(roundedPrice / 100) * 100;
                         
                         badge.style.color = "#155724";
                         badge.style.backgroundColor = "#d4edda";
-                        badge.innerText = `✅ 成功對接證交所！已自動帶入 [${dataDate}] 最新收盤價: ${roundedPrice} 點`;
+                        badge.innerText = `✅ 成功直連證交所！已自動帶入 [${dataDate}] 收盤價: ${roundedPrice} 點`;
                         updateAll();
                         return;
                     }
                 }
-                throw new Error();
+                throw new Error("無效的報價資料");
             } catch (e) {
-                console.warn("證交所 API 連線異常，啟用安全降級");
+                console.warn("證交所 API 暫時無法連線", e);
                 badge.style.color = "#856404";
                 badge.style.backgroundColor = "#fff3cd";
-                badge.innerText = "💡 證交所伺服器維護中。已為您啟動手動計算機（預設 23000 點），您可自由調整欄位！";
+                badge.innerText = "💡 證交所資料延遲中。已啟動手動計算機（預設 23000 點），請自由調整！";
                 
                 document.getElementById('currentPrice').value = 23000;
                 updateAll();
@@ -221,6 +221,18 @@
             document.getElementById('tplStrike').value = Math.round(S / 100) * 100;
             updateAll();
         }
+
+        // 支援滑鼠滾輪微調點數
+        document.getElementById('currentPrice').addEventListener('wheel', function(e) {
+            e.preventDefault();
+            let currentVal = parseFloat(this.value) || 23000;
+            if (e.deltaY < 0) {
+                this.value = currentVal + 50;
+            } else {
+                this.value = Math.max(0, currentVal - 50);
+            }
+            onPriceChange();
+        });
 
         function addTemplate(type) {
             const K = parseFloat(document.getElementById('tplStrike').value);
@@ -260,7 +272,12 @@
             updateAll();
         }
 
-        // 🧠 台灣期交所保證金優化配對演算法
+        function clearAll() {
+            positions = [];
+            updateAll();
+        }
+
+        // --- 🧠 台灣期交所保證金演算法 ---
         function calculateOptimizedMargin(S, paramA, paramB) {
             let totalMargin = 0;
             let flatPositions = [];
@@ -271,7 +288,6 @@
                 }
             });
 
-            // 1. 優先配對同類型價差單
             for (let i = 0; i < flatPositions.length; i++) {
                 if (flatPositions[i].used) continue;
                 for (let j = 0; j < flatPositions.length; j++) {
@@ -292,7 +308,6 @@
                 }
             }
 
-            // 2. 配對雙賣策略 (跨式/勒式)
             for (let i = 0; i < flatPositions.length; i++) {
                 if (flatPositions[i].used || flatPositions[i].side !== 'Short') continue;
                 for (let j = 0; j < flatPositions.length; j++) {
@@ -325,7 +340,6 @@
             return (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
         }
 
-        // --- Black-Scholes 數學核心 ---
         function cnd(x) {
             const a1 = 0.319381530, a2 = -0.356563782, a3 = 1.781477937, a4 = -1.821255978, a5 = 1.330274429;
             const L = Math.abs(x); const K = 1.0 / (1.0 + 0.2316419 * L);
