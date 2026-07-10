@@ -302,4 +302,116 @@
                 theta = (-S * npdf(d1) * v / (2 * tSqrt) + (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(-d2)) / 365.0;
             }
             const dir = pos.side === 'Long' ? 1 : -1;
-            return { delta: delta *
+            return { delta: delta * dir * pos.quantity, gamma: gamma * dir * pos.quantity, vega: vega * dir * pos.quantity, theta: theta * dir * pos.quantity };
+        }
+
+        function calculateSinglePayoff(st, pos) {
+            let payoff = pos.type === 'Call' ? Math.max(st - pos.strike, 0) - pos.premium : Math.max(pos.strike - st, 0) - pos.premium;
+            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER * pos.quantity;
+        }
+
+        // --- 主刷新引擎 ---
+        function updateAll() {
+            renderPositions();
+            const S = parseFloat(document.getElementById('currentPrice').value) || 23000;
+            const IV = parseFloat(document.getElementById('volatility').value) || 17;
+            const Days = parseFloat(document.getElementById('daysToExpiry').value) || 0;
+            const r = parseFloat(document.getElementById('riskFree').value) || 1.5;
+            const paramA = parseFloat(document.getElementById('paramA').value) || 48000;
+            const paramB = parseFloat(document.getElementById('paramB').value) || 25000;
+
+            let totalPremiumCost = 0;
+            let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
+
+            positions.forEach(pos => {
+                totalPremiumCost += (pos.side === 'Long' ? -1 : 1) * pos.premium * MULTIPLIER * pos.quantity;
+                const g = calculateGreeks(pos, S, IV, Days, r);
+                totalD += g.delta; totalG += g.gamma; totalV += g.vega; totalT += g.theta;
+            });
+
+            let optimizedMargin = calculateOptimizedMargin(S, paramA, paramB);
+
+            document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumCost >= 0 ? '+' : ''}${totalPremiumCost} 元`;
+            document.getElementById('totalMargin').innerText = `期交所優化保證金：${Math.round(optimizedMargin)} 元`;
+            document.getElementById('totalDelta').innerText = `Delta: ${totalD.toFixed(2)}`;
+            document.getElementById('totalGamma').innerText = `Gamma: ${totalG.toFixed(4)}`;
+            document.getElementById('totalVega').innerText = `Vega: ${(totalV * MULTIPLIER).toFixed(0)} 元/%`;
+            document.getElementById('totalTheta').innerText = `Theta: ${(totalT * MULTIPLIER).toFixed(0)} 元/天`;
+
+            // X軸線範圍渲染
+            const labels = []; const payoffPoints = []; const probabilityPoints = [];
+            const T = Days / 365.0; const v = IV / 100.0;
+            let winSteps = 0; let totalSteps = 0; let expectedValueSum = 0;
+
+            const stdDev = S * v * Math.sqrt(T || 0.003); 
+            const stepSize = 25; 
+            const startPrice = Math.round((S - Math.max(1000, 3 * stdDev)) / 100) * 100;
+            const endPrice = Math.round((S + Math.max(1000, 3 * stdDev)) / 100) * 100;
+
+            for (let st = startPrice; st <= endPrice; st += stepSize) {
+                labels.push(st);
+                let totalPayoff = 0;
+                positions.forEach(pos => { totalPayoff += calculateSinglePayoff(st, pos); });
+                payoffPoints.push(totalPayoff);
+
+                let probDensity = 0;
+                if (T > 0) {
+                    const z = (Math.log(st / S) - (r/100.0 - v*v/2.0)*T) / (v*Math.sqrt(T));
+                    probDensity = npdf(z) / (st * v * Math.sqrt(T));
+                }
+                probabilityPoints.push(probDensity);
+
+                if (T > 0) {
+                    expectedValueSum += totalPayoff * probDensity * stepSize;
+                    if (totalPayoff > 0) winSteps += probDensity * stepSize;
+                    totalSteps += probDensity * stepSize;
+                }
+            }
+
+            const pop = totalSteps > 0 ? (winSteps / totalSteps) * 100 : 0;
+            const ev = totalSteps > 0 ? (expectedValueSum / totalSteps) : 0;
+
+            document.getElementById('popScore').innerText = `獲利勝率 (PoP)：${Days <= 0 ? '已到期' : pop.toFixed(1) + ' %'}`;
+            document.getElementById('expectedValue').innerText = `期望收益 (EV)：${Days <= 0 ? '已到期' : Math.round(ev) + ' 元'}`;
+
+            const ctx = document.getElementById('payoffChart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: '策略總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
+                        { label: '結算價機率分佈 (右軸)', data: probabilityPoints, borderColor: '#ff9800', backgroundColor: 'rgba(255, 152, 0, 0.08)', borderWidth: 2, fill: true, yAxisID: 'y1', pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { title: { display: true, text: '到期結算價' } },
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: '損益 (新台幣)' } },
+                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: '機率密度' }, grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        function renderPositions() {
+            const listDiv = document.getElementById('positionList');
+            listDiv.innerHTML = '';
+            positions.forEach((pos, index) => {
+                listDiv.innerHTML += `
+                    <div class="position-item">
+                        <span><strong>[${pos.side === 'Long' ? '買進' : '賣出'}]</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點 | <strong>${pos.quantity}</strong> 口</span>
+                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
+                    </div>
+                `;
+            });
+        }
+
+        window.onload = function() { updateAll(); };
+    </script>
+</body>
+</html>
