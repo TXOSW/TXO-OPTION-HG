@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (保證金完全精確版)</title>
+    <title>台指選擇權策略分析器 (期交所真實保證金完全版)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
@@ -28,8 +28,8 @@
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (保證金精確修正版)</h2>
-        <p>內建期交所複式單優化減免公式，精準扣抵收支型價差權利金，借貸型價差保證金自動歸零。</p>
+        <h2>📊 台指選擇權策略分析器 (真實保證金修正版)</h2>
+        <p>內建期交所複式單優化減免公式。價差策略（Spreads）之組合保證金調整為精確的「履約價差額 × 50元」。</p>
         <div class="input-group">
             <div>
                 <label>台指期模擬基準價 (S)：</label>
@@ -151,7 +151,7 @@
         let chartInstance = null;
         const MULTIPLIER = 50;
 
-        // 預設載入：買權多頭價差
+        // 預設載入一組組合單：買權多頭價差 (Buy 23000C, Short 23200C)
         positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150, quantity: 1 });
         positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50, quantity: 1 });
 
@@ -205,7 +205,7 @@
             updateAll();
         }
 
-        // --- 🧠 台灣期交所精確優化組合單保證金演算法 ---
+        // --- 🧠 台灣期交所精確優化組合單保證金演算法 (對齊真实券商風控) ---
         function calculateOptimizedMargin(S, paramA, paramB) {
             let totalMargin = 0;
             let flatPositions = [];
@@ -217,7 +217,7 @@
                 }
             });
 
-            // 1. 優先配對【同類型價差單 (Spreads)】減免
+            // 1. 優先配對【同類型價差單 (Spreads)】
             for (let i = 0; i < flatPositions.length; i++) {
                 if (flatPositions[i].used) continue;
                 for (let j = 0; j < flatPositions.length; j++) {
@@ -226,32 +226,14 @@
                     let p1 = flatPositions[i];
                     let p2 = flatPositions[j];
 
+                    // 必須是同類型（同為 Call 或同為 Put）且一買一賣（一Long一Short）
                     if (p1.type === p2.type && p1.side !== p2.side) {
                         let buyLeg = p1.side === 'Long' ? p1 : p2;
                         let sellLeg = p1.side === 'Short' ? p1 : p2;
-                        let spreadMargin = 0;
-
-                        if (p1.type === 'Call') {
-                            if (buyLeg.strike < sellLeg.strike) {
-                                // 買權多頭價差 (借貸型)：付出權利金即鎖死風險，保證金為 0 元
-                                spreadMargin = 0;
-                            } else {
-                                // 買權空頭價差 (收支型)：(買進履約價 - 賣出履約價) * 50 - 淨收權利金
-                                let netPremiumReceived = sellLeg.premium - buyLeg.premium;
-                                let rawRisk = (buyLeg.strike - sellLeg.strike) * MULTIPLIER;
-                                spreadMargin = Math.max(0, rawRisk - (netPremiumReceived * MULTIPLIER));
-                            }
-                        } else { // Put
-                            if (buyLeg.strike > sellLeg.strike) {
-                                // 賣權空頭價差 (借貸型)：付出權利金鎖死風險，保證金為 0 元
-                                spreadMargin = 0;
-                            } else {
-                                // 賣權多頭價差 (收支型)：(賣出履約價 - 買進履約價) * 50 - 淨收權利金
-                                let netPremiumReceived = sellLeg.premium - buyLeg.premium;
-                                let rawRisk = (sellLeg.strike - buyLeg.strike) * MULTIPLIER;
-                                spreadMargin = Math.max(0, rawRisk - (netPremiumReceived * MULTIPLIER));
-                            }
-                        }
+                        
+                        // 🌟 修正核心：台灣期交所規定，不論看對或看錯方向，價差部位之組合保證金一律收取「履約價價差額 × 50元」
+                        let spreadMargin = Math.abs(buyLeg.strike - sellLeg.strike) * MULTIPLIER;
+                        
                         totalMargin += spreadMargin;
                         p1.used = true;
                         p2.used = true;
@@ -272,7 +254,7 @@
                     if (p1.type !== p2.type) { // 一個 Call 賣方，一個 Put 賣方
                         let margin1 = calculateSingleLegMargin(p1, S, paramA, paramB);
                         let margin2 = calculateSingleLegMargin(p2, S, paramA, paramB);
-                        // 期交所官方規定：收取保證金較大者 + 另一邊的權利金市值
+                        // 期交所規定：收取保證金較大者 + 另一邊的權利金市值
                         totalMargin += margin1 >= margin2 ? (margin1 + p2.premium * MULTIPLIER) : (margin2 + p1.premium * MULTIPLIER);
                         p1.used = true;
                         p2.used = true;
@@ -281,7 +263,7 @@
                 }
             }
 
-            // 3. 剩餘單腳部位直接計算
+            // 3. 剩餘未配對成功的單腳部位，回歸傳統單一部位收取
             flatPositions.forEach(p => {
                 if (!p.used) totalMargin += calculateSingleLegMargin(p, S, paramA, paramB);
             });
@@ -320,116 +302,4 @@
                 theta = (-S * npdf(d1) * v / (2 * tSqrt) + (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(-d2)) / 365.0;
             }
             const dir = pos.side === 'Long' ? 1 : -1;
-            return { delta: delta * dir * pos.quantity, gamma: gamma * dir * pos.quantity, vega: vega * dir * pos.quantity, theta: theta * dir * pos.quantity };
-        }
-
-        function calculateSinglePayoff(st, pos) {
-            let payoff = pos.type === 'Call' ? Math.max(st - pos.strike, 0) - pos.premium : Math.max(pos.strike - st, 0) - pos.premium;
-            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER * pos.quantity;
-        }
-
-        // --- 主刷新引擎 ---
-        function updateAll() {
-            renderPositions();
-            const S = parseFloat(document.getElementById('currentPrice').value) || 23000;
-            const IV = parseFloat(document.getElementById('volatility').value) || 17;
-            const Days = parseFloat(document.getElementById('daysToExpiry').value) || 0;
-            const r = parseFloat(document.getElementById('riskFree').value) || 1.5;
-            const paramA = parseFloat(document.getElementById('paramA').value) || 48000;
-            const paramB = parseFloat(document.getElementById('paramB').value) || 25000;
-
-            let totalPremiumCost = 0;
-            let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
-
-            positions.forEach(pos => {
-                totalPremiumCost += (pos.side === 'Long' ? -1 : 1) * pos.premium * MULTIPLIER * pos.quantity;
-                const g = calculateGreeks(pos, S, IV, Days, r);
-                totalD += g.delta; totalG += g.gamma; totalV += g.vega; totalT += g.theta;
-            });
-
-            let optimizedMargin = calculateOptimizedMargin(S, paramA, paramB);
-
-            document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumCost >= 0 ? '+' : ''}${totalPremiumCost} 元`;
-            document.getElementById('totalMargin').innerText = `期交所優化保證金：${Math.round(optimizedMargin)} 元`;
-            document.getElementById('totalDelta').innerText = `Delta: ${totalD.toFixed(2)}`;
-            document.getElementById('totalGamma').innerText = `Gamma: ${totalG.toFixed(4)}`;
-            document.getElementById('totalVega').innerText = `Vega: ${(totalV * MULTIPLIER).toFixed(0)} 元/%`;
-            document.getElementById('totalTheta').innerText = `Theta: ${(totalT * MULTIPLIER).toFixed(0)} 元/天`;
-
-            // X軸線範圍渲染
-            const labels = []; const payoffPoints = []; const probabilityPoints = [];
-            const T = Days / 365.0; const v = IV / 100.0;
-            let winSteps = 0; let totalSteps = 0; let expectedValueSum = 0;
-
-            const stdDev = S * v * Math.sqrt(T || 0.003); 
-            const stepSize = 25; 
-            const startPrice = Math.round((S - Math.max(1000, 3 * stdDev)) / 100) * 100;
-            const endPrice = Math.round((S + Math.max(1000, 3 * stdDev)) / 100) * 100;
-
-            for (let st = startPrice; st <= endPrice; st += stepSize) {
-                labels.push(st);
-                let totalPayoff = 0;
-                positions.forEach(pos => { totalPayoff += calculateSinglePayoff(st, pos); });
-                payoffPoints.push(totalPayoff);
-
-                let probDensity = 0;
-                if (T > 0) {
-                    const z = (Math.log(st / S) - (r/100.0 - v*v/2.0)*T) / (v*Math.sqrt(T));
-                    probDensity = npdf(z) / (st * v * Math.sqrt(T));
-                }
-                probabilityPoints.push(probDensity);
-
-                if (T > 0) {
-                    expectedValueSum += totalPayoff * probDensity * stepSize;
-                    if (totalPayoff > 0) winSteps += probDensity * stepSize;
-                    totalSteps += probDensity * stepSize;
-                }
-            }
-
-            const pop = totalSteps > 0 ? (winSteps / totalSteps) * 100 : 0;
-            const ev = totalSteps > 0 ? (expectedValueSum / totalSteps) : 0;
-
-            document.getElementById('popScore').innerText = `獲利勝率 (PoP)：${Days <= 0 ? '已到期' : pop.toFixed(1) + ' %'}`;
-            document.getElementById('expectedValue').innerText = `期望收益 (EV)：${Days <= 0 ? '已到期' : Math.round(ev) + ' 元'}`;
-
-            const ctx = document.getElementById('payoffChart').getContext('2d');
-            if (chartInstance) chartInstance.destroy();
-
-            chartInstance = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: labels,
-                    datasets: [
-                        { label: '策略總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
-                        { label: '結算價機率分佈 (右軸)', data: probabilityPoints, borderColor: '#ff9800', backgroundColor: 'rgba(255, 152, 0, 0.08)', borderWidth: 2, fill: true, yAxisID: 'y1', pointRadius: 0 }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    interaction: { mode: 'index', intersect: false },
-                    scales: {
-                        x: { title: { display: true, text: '到期結算價' } },
-                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: '損益 (新台幣)' } },
-                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: '機率密度' }, grid: { drawOnChartArea: false } }
-                    }
-                }
-            });
-        }
-
-        function renderPositions() {
-            const listDiv = document.getElementById('positionList');
-            listDiv.innerHTML = '';
-            positions.forEach((pos, index) => {
-                listDiv.innerHTML += `
-                    <div class="position-item">
-                        <span><strong>[${pos.side === 'Long' ? '買進' : '賣出'}]</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點 | <strong>${pos.quantity}</strong> 口</span>
-                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
-                    </div>
-                `;
-            });
-        }
-
-        window.onload = function() { updateAll(); };
-    </script>
-</body>
-</html>
+            return { delta: delta *
