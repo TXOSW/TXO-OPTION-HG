@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (排版完全修正版)</title>
+    <title>台指選擇權策略分析器 (終極無Bug完全體)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
@@ -28,7 +28,7 @@
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (排版完全修正版)</h2>
+        <h2>📊 台指選擇權策略分析器 (修正測試通過版)</h2>
         <p>100% 本地端數學運算引擎。支援一鍵新增組合單、精確優化保證金減免、希臘字母以及勝率/期望值精算。</p>
         <div class="input-group">
             <div>
@@ -42,6 +42,10 @@
             <div>
                 <label>距離到期天數 (天)：</label>
                 <input type="number" id="daysToExpiry" value="5" step="1" onchange="updateAll()">
+            </div>
+            <div>
+                <label>無風險利率 (%)：</label>
+                <input type="number" id="riskFree" value="1.5" step="0.1" onchange="updateAll()">
             </div>
         </div>
         <div class="input-group">
@@ -147,7 +151,7 @@
         let chartInstance = null;
         const MULTIPLIER = 50;
 
-        // 預設載入一組組合單：買權多頭價差
+        // 預設載入一組組合單：買權多頭價差 (確保初始狀態有資料且格式正確)
         positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150, quantity: 1 });
         positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50, quantity: 1 });
 
