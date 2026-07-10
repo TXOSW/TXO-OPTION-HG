@@ -104,4 +104,313 @@
                 </div>
                 <div>
                     <label>權利金(點數)</label>
-                    <input type
+                    <input type="number" id="premium" value="100">
+                </div>
+                <div>
+                    <label>口數</label>
+                    <input type="number" id="quantity" value="1" min="1">
+                </div>
+            </div>
+            <button onclick="addSinglePosition()">加入單腳部位</button>
+        </div>
+
+        <div class="card">
+            <h3>📋 當前複式策略部位清單</h3>
+            <div id="positionList" style="min-height: 100px;"></div>
+            <button style="background-color: #6c757d; padding: 5px 10px; font-size: 12px; margin-top: 5px;" onclick="clearAll()">清空全部</button>
+
+            <div class="summary-box">
+                <div class="summary-item" id="totalPremiumCost">總權利金收支：0 元</div>
+                <div class="summary-item" id="totalMargin">期交所優化保證金：0 元</div>
+                <div class="summary-item" id="popScore">獲利勝率 (PoP)：0%</div>
+                <div class="summary-item" id="expectedValue">期望收益 (EV)：0 元</div>
+            </div>
+
+            <div class="greeks-box">
+                <div id="totalDelta">Delta: 0.00</div>
+                <div id="totalGamma">Gamma: 0.0000</div>
+                <div id="totalVega">Vega: 0 元/%</div>
+                <div id="totalTheta">Theta: 0 元/天</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>📈 複式策略總損益與機率山丘圖</h3>
+        <canvas id="payoffChart" width="800" height="350"></canvas>
+    </div>
+
+    <script>
+        let positions = [];
+        let chartInstance = null;
+        const MULTIPLIER = 50;
+
+        // 預設載入一組組合單：買權多頭價差
+        positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150, quantity: 1 });
+        positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50, quantity: 1 });
+
+        function onPriceChange() {
+            const S = parseFloat(document.getElementById('currentPrice').value);
+            document.getElementById('strike').value = Math.round(S / 100) * 100;
+            document.getElementById('tplStrike').value = Math.round(S / 100) * 100;
+            updateAll();
+        }
+
+        // --- ⚡ 組合單模板快速生成器 ---
+        function addTemplate(type) {
+            const K = parseFloat(document.getElementById('tplStrike').value);
+            const D = parseFloat(document.getElementById('tplDistance').value);
+            const Q = parseInt(document.getElementById('tplQty').value) || 1;
+
+            if (type === 'BullCall') {
+                positions.push({ side: 'Long', type: 'Call', strike: K, premium: 150, quantity: Q });
+                positions.push({ side: 'Short', type: 'Call', strike: K + D, premium: 50, quantity: Q });
+            } else if (type === 'BearPut') {
+                positions.push({ side: 'Long', type: 'Put', strike: K, premium: 150, quantity: Q });
+                positions.push({ side: 'Short', type: 'Put', strike: K - D, premium: 50, quantity: Q });
+            } else if (type === 'ShortStrangle') {
+                positions.push({ side: 'Short', type: 'Call', strike: K + D, premium: 45, quantity: Q });
+                positions.push({ side: 'Short', type: 'Put', strike: K - D, premium: 50, quantity: Q });
+            } else if (type === 'IronButterfly') {
+                positions.push({ side: 'Short', type: 'Call', strike: K, premium: 120, quantity: Q });
+                positions.push({ side: 'Short', type: 'Put', strike: K, premium: 110, quantity: Q });
+                positions.push({ side: 'Long', type: 'Call', strike: K + D, premium: 30, quantity: Q });
+                positions.push({ side: 'Long', type: 'Put', strike: K - D, premium: 25, quantity: Q });
+            }
+            updateAll();
+        }
+
+        function addSinglePosition() {
+            const side = document.getElementById('side').value;
+            const type = document.getElementById('type').value;
+            const strike = parseFloat(document.getElementById('strike').value);
+            const premium = parseFloat(document.getElementById('premium').value);
+            const quantity = parseInt(document.getElementById('quantity').value) || 1;
+            positions.push({ side, type, strike, premium, quantity });
+            updateAll();
+        }
+
+        function deletePosition(index) {
+            positions.splice(index, 1);
+            updateAll();
+        }
+
+        function clearAll() {
+            positions = [];
+            updateAll();
+        }
+
+        // --- 🧠 台灣期交所優化保證金配對演算法 ---
+        function calculateOptimizedMargin(S, paramA, paramB) {
+            let totalMargin = 0;
+            let flatPositions = [];
+            
+            // 展開口數
+            positions.forEach(p => {
+                for (let i = 0; i < p.quantity; i++) {
+                    flatPositions.push({ side: p.side, type: p.type, strike: p.strike, premium: p.premium, used: false });
+                }
+            });
+
+            // 1. 優先配對【價差單】
+            for (let i = 0; i < flatPositions.length; i++) {
+                if (flatPositions[i].used) continue;
+                for (let j = 0; j < flatPositions.length; j++) {
+                    if (i === j || flatPositions[j].used) continue;
+
+                    let p1 = flatPositions[i];
+                    let p2 = flatPositions[j];
+
+                    if (p1.type === p2.type && p1.side !== p2.side) {
+                        let buyLeg = p1.side === 'Long' ? p1 : p2;
+                        let sellLeg = p1.side === 'Short' ? p1 : p2;
+                        let spreadMargin = 0;
+
+                        if (p1.type === 'Call') {
+                            spreadMargin = buyLeg.strike < sellLeg.strike ? 0 : (buyLeg.strike - sellLeg.strike) * MULTIPLIER;
+                        } else {
+                            spreadMargin = buyLeg.strike > sellLeg.strike ? 0 : (sellLeg.strike - buyLeg.strike) * MULTIPLIER;
+                        }
+                        totalMargin += spreadMargin;
+                        p1.used = true;
+                        p2.used = true;
+                        break;
+                    }
+                }
+            }
+
+            // 2. 次要配對【雙邊賣方：跨式/勒式】
+            for (let i = 0; i < flatPositions.length; i++) {
+                if (flatPositions[i].used || flatPositions[i].side !== 'Short') continue;
+                for (let j = 0; j < flatPositions.length; j++) {
+                    if (i === j || flatPositions[j].used || flatPositions[j].side !== 'Short') continue;
+
+                    let p1 = flatPositions[i];
+                    let p2 = flatPositions[j];
+
+                    if (p1.type !== p2.type) {
+                        let margin1 = calculateSingleLegMargin(p1, S, paramA, paramB);
+                        let margin2 = calculateSingleLegMargin(p2, S, paramA, paramB);
+                        totalMargin += margin1 >= margin2 ? (margin1 + p2.premium * MULTIPLIER) : (margin2 + p1.premium * MULTIPLIER);
+                        p1.used = true;
+                        p2.used = true;
+                        break;
+                    }
+                }
+            }
+
+            // 3. 剩餘單腳
+            flatPositions.forEach(p => {
+                if (!p.used) totalMargin += calculateSingleLegMargin(p, S, paramA, paramB);
+            });
+
+            return totalMargin;
+        }
+
+        function calculateSingleLegMargin(pos, S, paramA, paramB) {
+            if (pos.side === 'Long') return 0;
+            let outOfMoney = pos.type === 'Call' ? Math.max(pos.strike - S, 0) : Math.max(S - pos.strike, 0);
+            return (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
+        }
+
+        // --- Black-Scholes 數學核心 ---
+        function cnd(x) {
+            const a1 = 0.319381530, a2 = -0.356563782, a3 = 1.781477937, a4 = -1.821255978, a5 = 1.330274429;
+            const L = Math.abs(x); const K = 1.0 / (1.0 + 0.2316419 * L);
+            let w = 1.0 - 1.0 / Math.sqrt(2.0 * Math.PI) * Math.exp(-L * L / 2.0) * (a1 * K + a2 * Math.pow(K, 2) + a3 * Math.pow(K, 3) + a4 * Math.pow(K, 4) + a5 * Math.pow(K, 5));
+            return x < 0 ? 1.0 - w : w;
+        }
+        function npdf(x) { return (1.0 / Math.sqrt(2.0 * Math.PI)) * Math.exp(-0.5 * x * x); }
+
+        function calculateGreeks(pos, S, IV, Days, r) {
+            if (Days <= 0) return { delta: 0, gamma: 0, vega: 0, theta: 0 };
+            const T = Days / 365.0; const v = IV / 100.0; const K = pos.strike;
+            // 避免除以 0
+            const tSqrt = Math.sqrt(T);
+            const d1 = (Math.log(S / K) + (r / 100.0 + v * v / 2.0) * T) / (v * tSqrt);
+            const d2 = d1 - v * tSqrt;
+            
+            let delta = 0, gamma = npdf(d1) / (S * v * tSqrt), vega = (S * tSqrt * npdf(d1)) / 100.0, theta = 0;
+            if (pos.type === 'Call') {
+                delta = cnd(d1);
+                theta = (-S * npdf(d1) * v / (2 * tSqrt) - (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(d2)) / 365.0;
+            } else {
+                delta = cnd(d1) - 1;
+                theta = (-S * npdf(d1) * v / (2 * tSqrt) + (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(-d2)) / 365.0;
+            }
+            const dir = pos.side === 'Long' ? 1 : -1;
+            return { delta: delta * dir * pos.quantity, gamma: gamma * dir * pos.quantity, vega: vega * dir * pos.quantity, theta: theta * dir * pos.quantity };
+        }
+
+        function calculateSinglePayoff(st, pos) {
+            let payoff = pos.type === 'Call' ? Math.max(st - pos.strike, 0) - pos.premium : Math.max(pos.strike - st, 0) - pos.premium;
+            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER * pos.quantity;
+        }
+
+        // --- 主計算刷新 ---
+        function updateAll() {
+            renderPositions();
+            const S = parseFloat(document.getElementById('currentPrice').value) || 23000;
+            const IV = parseFloat(document.getElementById('volatility').value) || 17;
+            const Days = parseFloat(document.getElementById('daysToExpiry').value) || 0;
+            const r = parseFloat(document.getElementById('riskFree').value) || 1.5;
+            const paramA = parseFloat(document.getElementById('paramA').value) || 48000;
+            const paramB = parseFloat(document.getElementById('paramB').value) || 25000;
+
+            let totalPremiumCost = 0;
+            let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
+
+            positions.forEach(pos => {
+                totalPremiumCost += (pos.side === 'Long' ? -1 : 1) * pos.premium * MULTIPLIER * pos.quantity;
+                const g = calculateGreeks(pos, S, IV, Days, r);
+                totalD += g.delta; totalG += g.gamma; totalV += g.vega; totalT += g.theta;
+            });
+
+            let optimizedMargin = calculateOptimizedMargin(S, paramA, paramB);
+
+            document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumCost >= 0 ? '+' : ''}${totalPremiumCost} 元`;
+            document.getElementById('totalMargin').innerText = `期交所優化保證金：${Math.round(optimizedMargin)} 元`;
+            document.getElementById('totalDelta').innerText = `Delta: ${totalD.toFixed(2)}`;
+            document.getElementById('totalGamma').innerText = `Gamma: ${totalG.toFixed(4)}`;
+            document.getElementById('totalVega').innerText = `Vega: ${(totalV * MULTIPLIER).toFixed(0)} 元/%`;
+            document.getElementById('totalTheta').innerText = `Theta: ${(totalT * MULTIPLIER).toFixed(0)} 元/天`;
+
+            // 建立模擬範圍與機率
+            const labels = []; const payoffPoints = []; const probabilityPoints = [];
+            const T = Days / 365.0; const v = IV / 100.0;
+            let winSteps = 0; let totalSteps = 0; let expectedValueSum = 0;
+
+            // 確定 X 軸模擬跨度：固定或隨波動率彈性
+            const stdDev = S * v * Math.sqrt(T || 0.003); 
+            const stepSize = 25; // 調整為固定的台指履約價常見步長，圖表渲染更流暢
+            const startPrice = Math.round((S - Math.max(1000, 3 * stdDev)) / 100) * 100;
+            const endPrice = Math.round((S + Math.max(1000, 3 * stdDev)) / 100) * 100;
+
+            for (let st = startPrice; st <= endPrice; st += stepSize) {
+                labels.push(st);
+                let totalPayoff = 0;
+                positions.forEach(pos => { totalPayoff += calculateSinglePayoff(st, pos); });
+                payoffPoints.push(totalPayoff);
+
+                let probDensity = 0;
+                if (T > 0) {
+                    const z = (Math.log(st / S) - (r/100.0 - v*v/2.0)*T) / (v*Math.sqrt(T));
+                    probDensity = npdf(z) / (st * v * Math.sqrt(T));
+                }
+                probabilityPoints.push(probDensity);
+
+                if (T > 0) {
+                    expectedValueSum += totalPayoff * probDensity * stepSize;
+                    if (totalPayoff > 0) winSteps += probDensity * stepSize;
+                    totalSteps += probDensity * stepSize;
+                }
+            }
+
+            const pop = totalSteps > 0 ? (winSteps / totalSteps) * 100 : 0;
+            const ev = totalSteps > 0 ? (expectedValueSum / totalSteps) : 0;
+
+            document.getElementById('popScore').innerText = `獲利勝率 (PoP)：${Days <= 0 ? '已到期' : pop.toFixed(1) + ' %'}`;
+            document.getElementById('expectedValue').innerText = `期望收益 (EV)：${Days <= 0 ? '已到期' : Math.round(ev) + ' 元'}`;
+
+            // 繪圖
+            const ctx = document.getElementById('payoffChart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: '策略總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
+                        { label: '結算價機率分佈 (右軸)', data: probabilityPoints, borderColor: '#ff9800', backgroundColor: 'rgba(255, 152, 0, 0.08)', borderWidth: 2, fill: true, yAxisID: 'y1', pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { title: { display: true, text: '到期結算價' } },
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: '損益 (新台幣)' } },
+                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: '機率密度' }, grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        function renderPositions() {
+            const listDiv = document.getElementById('positionList');
+            listDiv.innerHTML = '';
+            positions.forEach((pos, index) => {
+                listDiv.innerHTML += `
+                    <div class="position-item">
+                        <span><strong>[${pos.side === 'Long' ? '買進' : '賣出'}]</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點 | <strong>${pos.quantity}</strong> 口</span>
+                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
+                    </div>
+                `;
+            });
+        }
+
+        window.onload = function() { updateAll(); };
+    </script>
+</body>
+</html>
