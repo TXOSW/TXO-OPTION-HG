@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>台指選擇權策略分析器 (網頁版)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 900px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h2 { margin-top: 0; color: #333; }
+        .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1-fraction)); gap: 10px; margin-bottom: 15px; }
+        label { font-size: 14px; color: #666; font-weight: bold; }
+        select, input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background-color: #0056b3; }
+        .position-item { background: #e9ecef; padding: 10px; border-radius: 4px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
+        .delete-btn { background-color: #dc3545; padding: 5px 10px; font-size: 12px; }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h2>📊 台指選擇權策略分析器</h2>
+        <p>請輸入目前台指期貨點數，並新增選擇權部位來模擬到期損益圖。</p>
+        <div style="margin-bottom: 15px;">
+            <label>目前台指期基準價：</label>
+            <input type="number" id="currentPrice" value="23000" style="width: 150px;" onchange="updateChart()">
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>➕ 新增部位</h3>
+        <div class="input-group">
+            <div>
+                <label>買/賣</label>
+                <select id="side">
+                    <option value="Long">Buy (買進)</option>
+                    <option value="Short">Sell (賣出)</option>
+                </select>
+            </div>
+            <div>
+                <label>類型</label>
+                <select id="type">
+                    <option value="Call">Call (買權)</option>
+                    <option value="Put">Put (賣權)</option>
+                </select>
+            </div>
+            <div>
+                <label>履約價</label>
+                <input type="number" id="strike" value="23000">
+            </div>
+            <div>
+                <label>權利金(點數)</label>
+                <input type="number" id="premium" value="100">
+            </div>
+            <div style="display: flex; align-items: flex-end;">
+                <button onclick="addPosition()">加入組合</button>
+            </div>
+        </div>
+
+        <h4>當前部位清單：</h4>
+        <div id="positionList"></div>
+    </div>
+
+    <div class="card">
+        <h3>📈 到期損益模擬圖 (台指每點 50 元)</h3>
+        <canvas id="payoffChart" width="800" height="400"></canvas>
+    </div>
+
+    <script>
+        // 儲存所有部位的陣列
+        let positions = [];
+        let chartInstance = null;
+
+        // 初始化預設部位：買權多頭價差 (Buy 23000 C @150, Sell 23200 C @50)
+        positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 150 });
+        positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 50 });
+
+        function renderPositions() {
+            const listDiv = document.getElementById('positionList');
+            listDiv.innerHTML = '';
+            positions.forEach((pos, index) => {
+                listDiv.innerHTML += `
+                    <div class="position-item">
+                        <span><strong>${pos.side === 'Long' ? '買進' : '賣出'}</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點</span>
+                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
+                    </div>
+                `;
+            });
+        }
+
+        function addPosition() {
+            const side = document.getElementById('side').value;
+            const type = document.getElementById('type').value;
+            const strike = parseFloat(document.getElementById('strike').value);
+            const premium = parseFloat(document.getElementById('premium').value);
+
+            positions.push({ side, type, strike, premium });
+            renderPositions();
+            updateChart();
+        }
+
+        function deletePosition(index) {
+            positions.splice(index, 1);
+            renderPositions();
+            updateChart();
+        }
+
+        // 核心數學邏輯：計算單一部位在特定結算價(st)下的損益
+        function calculateSinglePayoff(st, pos) {
+            let payoff = 0;
+            const multiplier = 50; // 台指規格
+
+            if (pos.type === 'Call') {
+                payoff = Math.max(st - pos.strike, 0) - pos.premium;
+            } else {
+                payoff = Math.max(pos.strike - st, 0) - pos.premium;
+            }
+
+            if (pos.side === 'Short') {
+                payoff = -payoff;
+            }
+
+            return payoff * multiplier;
+        }
+
+        // 更新 Chart.js 圖表
+        function updateChart() {
+            const currentPrice = parseFloat(document.getElementById('currentPrice').value);
+            const labels = [];
+            const dataPoints = [];
+
+            // 模擬基準價上下 500 點，每 10 點計一個標籤
+            for (let st = currentPrice - 500; st <= currentPrice + 500; st += 10) {
+                labels.push(st);
+                let totalPayoff = 0;
+                positions.forEach(pos => {
+                    totalPayoff += calculateSinglePayoff(st, pos);
+                });
+                dataPoints.push(totalPayoff);
+            }
+
+            const ctx = document.getElementById('payoffChart').getContext('2d');
+            
+            if (chartInstance) {
+                chartInstance.destroy();
+            }
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '策略總損益 (NTD)',
+                        data: dataPoints,
+                        borderColor: '#28a745',
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        borderWidth: 3,
+                        fill: true,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: { title: { display: true, text: '到期結算價' } },
+                        y: { title: { display: true, text: '損益 (元)' } }
+                    }
+                }
+            });
+        }
+
+        // 首次載入
+        renderPositions();
+        updateChart();
+    </script>
+</body>
+</html>
