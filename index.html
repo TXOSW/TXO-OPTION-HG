@@ -3,33 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (專業保證金版)</title>
+    <title>台指選擇權策略分析器 (終極 B-S 勝率版)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1000px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
         h2, h3, h4 { margin-top: 0; color: #333; }
         .input-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 15px; }
         label { font-size: 14px; color: #666; font-weight: bold; }
         select, input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        button { background-color: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        button:hover { background-color: #0056b3; }
+        button { background-color: #28a745; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background-color: #218838; }
         .position-item { background: #e9ecef; padding: 10px; border-radius: 4px; margin-bottom: 5px; display: flex; justify-content: space-between; align-items: center; }
-        .delete-btn { background-color: #dc3545; padding: 5px 10px; font-size: 12px; }
-        .summary-box { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 15px; background: #e3f2fd; padding: 15px; border-radius: 6px; }
-        .summary-item { font-size: 16px; color: #0d47a1; font-weight: bold; }
+        .delete-btn { background-color: #dc3545; padding: 5px 10px; font-size: 12px; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        .summary-box { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; background: #e8f5e9; padding: 15px; border-radius: 6px; }
+        .summary-item { font-size: 16px; color: #1b5e20; font-weight: bold; }
+        .greeks-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #fff3e0; padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 14px; color: #e65100; font-weight: bold; text-align: center; }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (專業保證金版)</h2>
-        <p>請輸入目前台指期貨點數，並自訂期交所的保證金參數（A值、B值）。</p>
+        <h2>📊 台指選擇權策略分析器 (終極 B-S 勝率版)</h2>
+        <p>請輸入目前的台指市場狀態，系統會透過 Black-Scholes 模型自動精算策略勝率、期望值與整體希臘字母。</p>
         <div class="input-group">
             <div>
-                <label>目前台指期基準價：</label>
+                <label>目前台指期基準價 (S)：</label>
                 <input type="number" id="currentPrice" value="23000" onchange="updateAll()">
             </div>
+            <div>
+                <label>市場隱含波動率 (IV %)：</label>
+                <input type="number" id="volatility" value="18" step="0.5" onchange="updateAll()">
+            </div>
+            <div>
+                <label>距離到期天數 (天)：</label>
+                <input type="number" id="daysToExpiry" value="5" step="1" onchange="updateAll()">
+            </div>
+            <div>
+                <label>無風險利率 (%)：</label>
+                <input type="number" id="riskFree" value="1.5" step="0.1" onchange="updateAll()">
+            </div>
+        </div>
+        <div class="input-group">
             <div>
                 <label>期交所 A 值 (元)：</label>
                 <input type="number" id="paramA" value="48000" onchange="updateAll()">
@@ -77,29 +92,90 @@
         <div class="summary-box">
             <div class="summary-item" id="totalPremiumCost">總權利金收支：0 元</div>
             <div class="summary-item" id="totalMargin">預估總保證金：0 元</div>
-            <div class="summary-item" id="maxProfit">最大可能獲利：計算中...</div>
+            <div class="summary-item" id="popScore">預期獲利勝率 (PoP)：計算中...</div>
+            <div class="summary-item" id="expectedValue">策略期望收益 (EV)：計算中...</div>
+        </div>
+
+        <div class="greeks-box">
+            <div id="totalDelta">Delta: 0.00</div>
+            <div id="totalGamma">Gamma: 0.0000</div>
+            <div id="totalVega">Vega: 0.00</div>
+            <div id="totalTheta">Theta: 0.00</div>
         </div>
     </div>
 
     <div class="card">
-        <h3>📈 到期損益模擬圖 (台指每點 50 元)</h3>
+        <h3>📈 到期損益與機率曲線模擬圖 (台指每點 50 元)</h3>
         <canvas id="payoffChart" width="800" height="350"></canvas>
     </div>
 
     <script>
         let positions = [];
         let chartInstance = null;
-        const MULTIPLIER = 50; // 台指契約乘數
+        const MULTIPLIER = 50;
 
-        // 預設載入一組賣出勒式策略 (Short 23500C @50, Short 22500P @60)
-        positions.push({ side: 'Short', type: 'Call', strike: 23500, premium: 50 });
-        positions.push({ side: 'Short', type: 'Put', strike: 22500, premium: 60 });
+        // 預設載入一組買權多頭價差策略 (Buy 23000C @180, Sell 23200C @60)
+        positions.push({ side: 'Long', type: 'Call', strike: 23000, premium: 180 });
+        positions.push({ side: 'Short', type: 'Call', strike: 23200, premium: 60 });
 
+        // --- 數學核心：統計學與 Black-Scholes 公式 ---
+        
+        // 標準常態分配累積函數 (CDF) - 逼近法
+        function cnd(x) {
+            const a1 = 0.319381530, a2 = -0.356563782, a3 = 1.781477937;
+            const a4 = -1.821255978, a5 = 1.330274429;
+            const L = Math.abs(x);
+            const K = 1.0 / (1.0 + 0.2316419 * L);
+            let w = 1.0 - 1.0 / Math.sqrt(2.0 * Math.PI) * Math.exp(-L * L / 2.0) * (a1 * K + a2 * Math.pow(K, 2) + a3 * Math.pow(K, 3) + a4 * Math.pow(K, 4) + a5 * Math.pow(K, 5));
+            if (x < 0) w = 1.0 - w;
+            return w;
+        }
+
+        // 標準常態分配機率密度函數 (PDF)
+        function npdf(x) {
+            return (1.0 / Math.sqrt(2.0 * Math.PI)) * Math.exp(-0.5 * x * x);
+        }
+
+        // 計算單一部位的希臘字母 (The Greeks)
+        function calculateGreeks(pos, S, IV, Days, r) {
+            if (Days <= 0) return { delta: 0, gamma: 0, vega: 0, theta: 0 };
+            
+            const T = Days / 365.0;
+            const v = IV / 100.0;
+            const K = pos.strike;
+            
+            const d1 = (Math.log(S / K) + (r / 100.0 + v * v / 2.0) * T) / (v * Math.sqrt(T));
+            const d2 = d1 - v * Math.sqrt(T);
+            
+            let delta = 0, gamma = 0, vega = 0, theta = 0;
+            
+            // Gamma 與 Vega 買權賣權公式相同
+            gamma = npdf(d1) / (S * v * Math.sqrt(T));
+            vega = (S * Math.sqrt(T) * npdf(d1)) / 100.0; // 乘以 100 轉換為波動率變動 1% 的價值
+
+            if (pos.type === 'Call') {
+                delta = cnd(d1);
+                theta = (-S * npdf(d1) * v / (2 * Math.sqrt(T)) - (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(d2)) / 365.0;
+            } else { // Put
+                delta = cnd(d1) - 1;
+                theta = (-S * npdf(d1) * v / (2 * Math.sqrt(T)) + (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(-d2)) / 365.0;
+            }
+
+            // 乘上口數與買賣方方向
+            const direction = pos.side === 'Long' ? 1 : -1;
+            return {
+                delta: delta * direction,
+                gamma: gamma * direction,
+                vega: vega * direction,
+                theta: theta * direction
+            };
+        }
+
+        // --- UI 操作邏輯 ---
         function renderPositions() {
             const listDiv = document.getElementById('positionList');
             listDiv.innerHTML = '';
             positions.forEach((pos, index) => {
-                const marginText = pos.side === 'Short' ? ` (預估單一部位保證金)` : ' (買方免保證金)';
                 listDiv.innerHTML += `
                     <div class="position-item">
                         <span><strong>${pos.side === 'Long' ? '買進' : '賣出'}</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點</span>
@@ -114,7 +190,6 @@
             const type = document.getElementById('type').value;
             const strike = parseFloat(document.getElementById('strike').value);
             const premium = parseFloat(document.getElementById('premium').value);
-
             positions.push({ side, type, strike, premium });
             updateAll();
         }
@@ -124,7 +199,6 @@
             updateAll();
         }
 
-        // 計算單一部位在特定結算價(st)下的損益
         function calculateSinglePayoff(st, pos) {
             let payoff = 0;
             if (pos.type === 'Call') {
@@ -135,66 +209,101 @@
             return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER;
         }
 
-        // 精確計算台指選單一部位的賣方保證金 (A值、B值公式)
-        function calculateSingleMargin(pos, currentPrice, paramA, paramB) {
-            if (pos.side === 'Long') return 0; // 買方不需要保證金
-
-            let outOfMoney = 0; // 價外值
-            if (pos.type === 'Call') {
-                outOfMoney = Math.max(pos.strike - currentPrice, 0);
-            } else {
-                outOfMoney = Math.max(currentPrice - pos.strike, 0);
-            }
-
-            // 期交所官方公式：權利金市值 + Max(A值 - 價外值, B值)
-            const premiumMarketValue = pos.premium * MULTIPLIER;
-            const margin = premiumMarketValue + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
-            return margin;
+        function calculateSingleMargin(pos, S, paramA, paramB) {
+            if (pos.side === 'Long') return 0;
+            let outOfMoney = pos.type === 'Call' ? Math.max(pos.strike - S, 0) : Math.max(S - pos.strike, 0);
+            return (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
         }
 
-        // 更新數據、計算摘要與繪製圖表
+        // --- 核心整合計算與圖表渲染 ---
         function updateAll() {
             renderPositions();
 
-            const currentPrice = parseFloat(document.getElementById('currentPrice').value);
+            const S = parseFloat(document.getElementById('currentPrice').value);
+            const IV = parseFloat(document.getElementById('volatility').value);
+            const Days = parseFloat(document.getElementById('daysToExpiry').value);
+            const r = parseFloat(document.getElementById('riskFree').value);
             const paramA = parseFloat(document.getElementById('paramA').value);
             const paramB = parseFloat(document.getElementById('paramB').value);
 
-            // 1. 計算摘要數據
             let totalPremiumTextCost = 0;
             let totalMarginRequirement = 0;
+            let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
 
             positions.forEach(pos => {
-                // 權利金收支 (買方付出(-) / 賣方收取(+))
                 const premiumVal = pos.premium * MULTIPLIER;
                 totalPremiumTextCost += (pos.side === 'Long' ? -premiumVal : premiumVal);
+                totalMarginRequirement += calculateSingleMargin(pos, S, paramA, paramB);
                 
-                // 保證金加總
-                totalMarginRequirement += calculateSingleMargin(pos, currentPrice, paramA, paramB);
+                // 加總希臘字母風險
+                const greeks = calculateGreeks(pos, S, IV, Days, r);
+                totalD += greeks.delta;
+                totalG += greeks.gamma;
+                totalV += greeks.vega;
+                totalT += greeks.theta;
             });
 
             document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumTextCost >= 0 ? '+' : ''}${totalPremiumTextCost} 元`;
             document.getElementById('totalMargin').innerText = `預估總保證金：${totalMarginRequirement} 元`;
+            
+            // 顯示希臘字母 (每口對應點數變動)
+            document.getElementById('totalDelta').innerText = `Delta: ${totalD.toFixed(2)}`;
+            document.getElementById('totalGamma').innerText = `Gamma: ${totalG.toFixed(4)}`;
+            document.getElementById('totalVega').innerText = `Vega: ${(totalV * MULTIPLIER).toFixed(0)} 元/%`;
+            document.getElementById('totalTheta').innerText = `Theta: ${(totalT * MULTIPLIER).toFixed(0)} 元/天`;
 
-            // 2. 模擬圖表數據與找出最大獲利
+            // 模擬結算價與常態分配機率密度
             const labels = [];
-            const dataPoints = [];
-            let maxProfitFound = -Infinity;
+            const payoffPoints = [];
+            const probabilityPoints = [];
+            
+            const T = Days / 365.0;
+            const v = IV / 100.0;
+            
+            let winSteps = 0;
+            let totalSteps = 0;
+            let expectedValueSum = 0;
 
-            // 模擬基準價上下 1000 點，每 10 點計一個標籤
-            for (let st = currentPrice - 1000; st <= currentPrice + 1000; st += 10) {
+            // 模擬基準價上下 4 個標準差範圍 (更貼近實際機率分布)
+            const stdDev = S * v * Math.sqrt(T || 0.001); 
+            const stepSize = Math.max(10, Math.round(stdDev / 15));
+            const startPrice = Math.max(0, Math.round(S - 3.5 * stdDev));
+            const endPrice = Math.round(S + 3.5 * stdDev);
+
+            for (let st = startPrice; st <= endPrice; st += stepSize) {
                 labels.push(st);
+                
+                // 1. 計算該價格下的策略總損益
                 let totalPayoff = 0;
-                positions.forEach(pos => {
-                    totalPayoff += calculateSinglePayoff(st, pos);
-                });
-                dataPoints.push(totalPayoff);
-                if (totalPayoff > maxProfitFound) maxProfitFound = totalPayoff;
+                positions.forEach(pos => { totalPayoff += calculateSinglePayoff(st, pos); });
+                payoffPoints.push(totalPayoff);
+
+                // 2. 計算該結算價發生的機率密度 (Log-Normal 轉換近似)
+                let probDensity = 0;
+                if (T > 0) {
+                    const z = (Math.log(st / S) - (r/100.0 - v*v/2.0)*T) / (v*Math.sqrt(T));
+                    probDensity = npdf(z) / (st * v * Math.sqrt(T));
+                }
+                probabilityPoints.push(probDensity);
+
+                // 3. 期望值與勝率統計
+                if (T > 0) {
+                    expectedValueSum += totalPayoff * probDensity * stepSize;
+                    if (totalPayoff > 0) {
+                        winSteps += probDensity * stepSize;
+                    }
+                    totalSteps += probDensity * stepSize;
+                }
             }
 
-            document.getElementById('maxProfit').innerText = `最大可能獲利：${maxProfitFound > 0 ? maxProfitFound : 0} 元`;
+            // 標準化勝率與期望值
+            const pop = totalSteps > 0 ? (winSteps / totalSteps) * 100 : 0;
+            const ev = totalSteps > 0 ? (expectedValueSum / totalSteps) : 0;
 
-            // 3. 繪製 Chart.js
+            document.getElementById('popScore').innerText = `預期獲利勝率 (PoP)：${Days <= 0 ? '已到期' : pop.toFixed(1) + ' %'}`;
+            document.getElementById('expectedValue').innerText = `策略期望收益 (EV)：${Days <= 0 ? '已到期' : Math.round(ev) + ' 元'}`;
+
+            // 繪製雙 Y 軸圖表 (左軸：損益, 右軸：機率)
             const ctx = document.getElementById('payoffChart').getContext('2d');
             if (chartInstance) chartInstance.destroy();
 
@@ -202,28 +311,40 @@
                 type: 'line',
                 data: {
                     labels: labels,
-                    datasets: [{
-                        label: '策略總損益 (NTD)',
-                        data: dataPoints,
-                        borderColor: '#28a745',
-                        backgroundColor: 'rgba(40, 167, 69, 0.05)',
-                        borderWidth: 3,
-                        fill: true,
-                        pointRadius: 0
-                    }]
+                    datasets: [
+                        {
+                            label: '到期總損益 (左軸/元)',
+                            data: payoffPoints,
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.03)',
+                            borderWidth: 3,
+                            yAxisID: 'y',
+                            pointRadius: 0
+                        },
+                        {
+                            label: '結算價機率分佈 (右軸)',
+                            data: probabilityPoints,
+                            borderColor: '#ff9800',
+                            backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            yAxisID: 'y1',
+                            pointRadius: 0
+                        }
+                    ]
                 },
                 options: {
                     responsive: true,
                     interaction: { mode: 'index', intersect: false },
                     scales: {
                         x: { title: { display: true, text: '到期結算價' } },
-                        y: { title: { display: true, text: '損益 (元)' } }
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: '損益 (新台幣)' } },
+                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: '機率密度' }, grid: { drawOnChartArea: false } }
                     }
                 }
             });
         }
 
-        // 首次初始化
         updateAll();
     </script>
 </body>
