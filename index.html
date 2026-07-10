@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>台指選擇權策略分析器 (終極穩定完全體)</title>
+    <title>台指選擇權策略分析器 (極速手動覆盤版)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 1100px; margin: 20px auto; padding: 0 20px; background-color: #f5f7f9; }
@@ -21,19 +21,17 @@
         .summary-box { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-top: 15px; background: #e8f5e9; padding: 15px; border-radius: 6px; }
         .summary-item { font-size: 16px; color: #1b5e20; font-weight: bold; }
         .greeks-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; background: #fff3e0; padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 14px; color: #e65100; font-weight: bold; text-align: center; }
-        .status-text { font-size: 13px; color: #0056b3; font-weight: bold; margin-top: 6px; display: block; line-height: 1.4; }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h2>📊 台指選擇權策略分析器 (終極穩定完全體)</h2>
-        <p>本工具集成了自動數據同步、優雅降級機制、期交所保證金估算與 B-S 勝率期望值模型。</p>
+        <h2>📊 台指選擇權策略分析器 (極速手動覆盤版)</h2>
+        <p>純本地端數學引擎，免去網路連線延遲。請直接輸入收盤點數或你想模擬的目標行情進行計算。</p>
         <div class="input-group">
             <div>
-                <label>台指期結算基準價 (S)：</label>
-                <input type="number" id="currentPrice" value="23000" onchange="updateAll()">
-                <span id="fetchStatus" class="status-text">🔄 正在連線台灣市場數據節點...</span>
+                <label>台指期模擬基準價 (S)：</label>
+                <input type="number" id="currentPrice" value="23000" onchange="onPriceChange()">
             </div>
             <div>
                 <label>歷史/隱含波動率 (IV %)：</label>
@@ -91,4 +89,231 @@
         </div>
 
         <h4>當前策略部位：</h4>
-        <div id
+        <div id="positionList"></div>
+
+        <div class="summary-box">
+            <div class="summary-item" id="totalPremiumCost">總權利金收支：0 元</div>
+            <div class="summary-item" id="totalMargin">預估總保證金：0 元</div>
+            <div class="summary-item" id="popScore">預期獲利勝率 (PoP)：計算中...</div>
+            <div class="summary-item" id="expectedValue">策略期望收益 (EV)：計算中...</div>
+        </div>
+
+        <div class="greeks-box">
+            <div id="totalDelta">Delta: 0.00</div>
+            <div id="totalGamma">Gamma: 0.0000</div>
+            <div id="totalVega">Vega: 0 元/%</div>
+            <div id="totalTheta">Theta: 0 元/天</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>📈 到期損益與機率山丘圖 (台指每點 50 元)</h3>
+        <canvas id="payoffChart" width="800" height="350"></canvas>
+    </div>
+
+    <script>
+        let positions = [];
+        let chartInstance = null;
+        const MULTIPLIER = 50;
+
+        // 預設一組常見的寬幅賣出勒式策略
+        positions.push({ side: 'Short', type: 'Call', strike: 23400, premium: 45 });
+        positions.push({ side: 'Short', type: 'Put', strike: 22600, premium: 50 });
+
+        // 基準價改變時，自動幫下方的履約價框校正到最接近的百位數（方便新增部位）
+        function onPriceChange() {
+            const S = parseFloat(document.getElementById('currentPrice').value);
+            document.getElementById('strike').value = Math.round(S / 100) * 100;
+            updateAll();
+        }
+
+        // --- Black-Scholes 核心數學公式模組 ---
+        function cnd(x) {
+            const a1 = 0.319381530, a2 = -0.356563782, a3 = 1.781477937;
+            const a4 = -1.821255978, a5 = 1.330274429;
+            const L = Math.abs(x);
+            const K = 1.0 / (1.0 + 0.2316419 * L);
+            let w = 1.0 - 1.0 / Math.sqrt(2.0 * Math.PI) * Math.exp(-L * L / 2.0) * (a1 * K + a2 * Math.pow(K, 2) + a3 * Math.pow(K, 3) + a4 * Math.pow(K, 4) + a5 * Math.pow(K, 5));
+            if (x < 0) w = 1.0 - w;
+            return w;
+        }
+
+        function npdf(x) {
+            return (1.0 / Math.sqrt(2.0 * Math.PI)) * Math.exp(-0.5 * x * x);
+        }
+
+        function calculateGreeks(pos, S, IV, Days, r) {
+            if (Days <= 0) return { delta: 0, gamma: 0, vega: 0, theta: 0 };
+            const T = Days / 365.0;
+            const v = IV / 100.0;
+            const K = pos.strike;
+            const d1 = (Math.log(S / K) + (r / 100.0 + v * v / 2.0) * T) / (v * Math.sqrt(T));
+            const d2 = d1 - v * Math.sqrt(T);
+            
+            let delta = 0, gamma = 0, vega = 0, theta = 0;
+            gamma = npdf(d1) / (S * v * Math.sqrt(T));
+            vega = (S * Math.sqrt(T) * npdf(d1)) / 100.0;
+
+            if (pos.type === 'Call') {
+                delta = cnd(d1);
+                theta = (-S * npdf(d1) * v / (2 * Math.sqrt(T)) - (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(d2)) / 365.0;
+            } else {
+                delta = cnd(d1) - 1;
+                theta = (-S * npdf(d1) * v / (2 * Math.sqrt(T)) + (r/100.0) * K * Math.exp(-(r/100.0)*T) * cnd(-d2)) / 365.0;
+            }
+
+            const direction = pos.side === 'Long' ? 1 : -1;
+            return { delta: delta * direction, gamma: gamma * direction, vega: vega * direction, theta: theta * direction };
+        }
+
+        // --- UI 與基礎計算邏輯 ---
+        function renderPositions() {
+            const listDiv = document.getElementById('positionList');
+            listDiv.innerHTML = '';
+            positions.forEach((pos, index) => {
+                listDiv.innerHTML += `
+                    <div class="position-item">
+                        <span><strong>${pos.side === 'Long' ? '買進' : '賣出'}</strong> ${pos.type} 履約價: ${pos.strike} | 權利金: ${pos.premium} 點</span>
+                        <button class="delete-btn" onclick="deletePosition(${index})">刪除</button>
+                    </div>
+                `;
+            });
+        }
+
+        function addPosition() {
+            const side = document.getElementById('side').value;
+            const type = document.getElementById('type').value;
+            const strike = parseFloat(document.getElementById('strike').value);
+            const premium = parseFloat(document.getElementById('premium').value);
+            positions.push({ side, type, strike, premium });
+            updateAll();
+        }
+
+        function deletePosition(index) {
+            positions.splice(index, 1);
+            updateAll();
+        }
+
+        function calculateSinglePayoff(st, pos) {
+            let payoff = 0;
+            if (pos.type === 'Call') {
+                payoff = Math.max(st - pos.strike, 0) - pos.premium;
+            } else {
+                payoff = Math.max(pos.strike - st, 0) - pos.premium;
+            }
+            return (pos.side === 'Short' ? -payoff : payoff) * MULTIPLIER;
+        }
+
+        function calculateSingleMargin(pos, S, paramA, paramB) {
+            if (pos.side === 'Long') return 0;
+            let outOfMoney = pos.type === 'Call' ? Math.max(pos.strike - S, 0) : Math.max(S - pos.strike, 0);
+            return (pos.premium * MULTIPLIER) + Math.max(paramA - (outOfMoney * MULTIPLIER), paramB);
+        }
+
+        function updateAll() {
+            renderPositions();
+
+            const S = parseFloat(document.getElementById('currentPrice').value);
+            const IV = parseFloat(document.getElementById('volatility').value);
+            const Days = parseFloat(document.getElementById('daysToExpiry').value);
+            const r = parseFloat(document.getElementById('riskFree').value);
+            const paramA = parseFloat(document.getElementById('paramA').value);
+            const paramB = parseFloat(document.getElementById('paramB').value);
+
+            let totalPremiumCost = 0;
+            let totalMarginRequirement = 0;
+            let totalD = 0, totalG = 0, totalV = 0, totalT = 0;
+
+            positions.forEach(pos => {
+                const premiumVal = pos.premium * MULTIPLIER;
+                totalPremiumCost += (pos.side === 'Long' ? -premiumVal : premiumVal);
+                totalMarginRequirement += calculateSingleMargin(pos, S, paramA, paramB);
+                
+                const greeks = calculateGreeks(pos, S, IV, Days, r);
+                totalD += greeks.delta;
+                totalG += greeks.gamma;
+                totalV += greeks.vega;
+                totalT += greeks.theta;
+            });
+
+            document.getElementById('totalPremiumCost').innerText = `總權利金收支：${totalPremiumCost >= 0 ? '+' : ''}${totalPremiumCost} 元`;
+            document.getElementById('totalMargin').innerText = `預估總保證金：${totalMarginRequirement} 元`;
+            
+            document.getElementById('totalDelta').innerText = `Delta: ${totalD.toFixed(2)}`;
+            document.getElementById('totalGamma').innerText = `Gamma: ${totalG.toFixed(4)}`;
+            document.getElementById('totalVega').innerText = `Vega: ${(totalV * MULTIPLIER).toFixed(0)} 元/%`;
+            document.getElementById('totalTheta').innerText = `Theta: ${(totalT * MULTIPLIER).toFixed(0)} 元/天`;
+
+            const labels = [];
+            const payoffPoints = [];
+            const probabilityPoints = [];
+            
+            const T = Days / 365.0;
+            const v = IV / 100.0;
+            
+            let winSteps = 0;
+            let totalSteps = 0;
+            let expectedValueSum = 0;
+
+            const stdDev = S * v * Math.sqrt(T || 0.001); 
+            const stepSize = Math.max(10, Math.round(stdDev / 15));
+            const startPrice = Math.max(0, Math.round(S - 3.8 * stdDev));
+            const endPrice = Math.round(S + 3.8 * stdDev);
+
+            for (let st = startPrice; st <= endPrice; st += stepSize) {
+                labels.push(st);
+                let totalPayoff = 0;
+                positions.forEach(pos => { totalPayoff += calculateSinglePayoff(st, pos); });
+                payoffPoints.push(totalPayoff);
+
+                let probDensity = 0;
+                if (T > 0) {
+                    const z = (Math.log(st / S) - (r/100.0 - v*v/2.0)*T) / (v*Math.sqrt(T));
+                    probDensity = npdf(z) / (st * v * Math.sqrt(T));
+                }
+                probabilityPoints.push(probDensity);
+
+                if (T > 0) {
+                    expectedValueSum += totalPayoff * probDensity * stepSize;
+                    if (totalPayoff > 0) winSteps += probDensity * stepSize;
+                    totalSteps += probDensity * stepSize;
+                }
+            }
+
+            const pop = totalSteps > 0 ? (winSteps / totalSteps) * 100 : 0;
+            const ev = totalSteps > 0 ? (expectedValueSum / totalSteps) : 0;
+
+            document.getElementById('popScore').innerText = `預期獲利勝率 (PoP)：${Days <= 0 ? '已到期' : pop.toFixed(1) + ' %'}`;
+            document.getElementById('expectedValue').innerText = `策略期望收益 (EV)：${Days <= 0 ? '已到期' : Math.round(ev) + ' 元'}`;
+
+            const ctx = document.getElementById('payoffChart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: '到期總損益 (左軸/元)', data: payoffPoints, borderColor: '#007bff', backgroundColor: 'rgba(0, 123, 255, 0.03)', borderWidth: 3, yAxisID: 'y', pointRadius: 0 },
+                        { label: '結算價機率分佈 (右軸)', data: probabilityPoints, borderColor: '#ff9800', backgroundColor: 'rgba(255, 152, 0, 0.08)', borderWidth: 2, fill: true, yAxisID: 'y1', pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    interaction: { mode: 'index', intersect: false },
+                    scales: {
+                        x: { title: { display: true, text: '到期結算價' } },
+                        y: { type: 'linear', display: true, position: 'left', title: { display: true, text: '損益 (新台幣)' } },
+                        y1: { type: 'linear', display: true, position: 'right', title: { display: true, text: '機率密度' }, grid: { drawOnChartArea: false } }
+                    }
+                }
+            });
+        }
+
+        // 網頁初始載入時直接繪製圖形
+        window.onload = function() {
+            updateAll();
+        };
+    </script>
+</body>
+</html>
